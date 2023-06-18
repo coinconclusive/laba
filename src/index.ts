@@ -4,64 +4,12 @@ import { LanguageSupport } from "@codemirror/language";
 import { Compartment, EditorState, Extension, StateEffect } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
 import { basicSetup, EditorView } from "codemirror";
+import { filesystem, FileSystemNode, walk } from "./file";
+import { H, Q } from "./html";
+import { ArrayState, SimpleState, effectNow } from "./state";
 import { Theme, themeCssMap } from "./theme";
 import { anaTheme } from "./themes/ana";
 import { rosePineTheme } from "./themes/rose-pine";
-
-class State<V, T> {
-  private cbs: ((v: V, old: V) => void)[] = [];
-  constructor(private value: V, private updater: (v: V, t: T) => V) {}
-
-  current() { return this.value; }
-  effect(cb: (v: V, old: V) => void) { this.cbs.push(cb); }
-  update(t: T) {
-    const old = this.value;
-    this.value = this.updater(this.value, t);
-    this.cbs.forEach(cb => cb(this.value, old));
-  }
-}
-
-class SimpleState<V> extends State<V, V> {
-  constructor(initial: V) { super(initial, (_, t) => t); }
-}
-
-class ArrayState<E> extends State<E[], ['push', E] | ['pop']> {
-  constructor(initial: E[]) {
-    super(initial, (v, t) => {
-      if (t[0] === 'push') v.push(t[1]);
-      if (t[0] === 'pop') v.pop();
-      return v;
-    })
-  }
-
-  push(e: E) { this.update(['push', e]); }
-  pop() { this.update(['pop']); }
-  get(index: number) { return this.current()[index]; }
-}
-
-const effectNow = <V, T>(state: State<V, T>, cb: (v: V, old: V) => void, old?: V) => {
-  cb(state.current(), old);
-  state.effect(cb);
-};
-
-const Q = <T extends HTMLElement>(q: string) => document.querySelector<T>(q);
-
-function H(f?: (e: HTMLDivElement) => void): HTMLDivElement;
-function H<K extends keyof HTMLElementTagNameMap>(
-  tagName: K,
-  f?: (e: HTMLElementTagNameMap[K]) => void
-): HTMLElementTagNameMap[K];
-
-function H<K extends keyof HTMLElementTagNameMap>(
-  a?: K | ((e: HTMLDivElement) => void),
-  f?: (e: HTMLElementTagNameMap[K]) => void
-) {
-  if (!a) return document.createElement('div');
-  if (typeof a === 'function') { f = a as typeof f; a = 'div' as K; }
-  const e = document.createElement<K>(a);
-  if (f) f(e);
-  return e;
-}
 
 interface SidebarItem {
   name: SimpleState<string>,
@@ -116,37 +64,6 @@ const createSidebarItem = (item: SidebarItem, parentPath: string = '') => H(e =>
   });
 });
 
-const sidebarItemFolder = (name: string, children?: SidebarItem[], collapsed?: boolean) =>
-  <SidebarItem>({
-    name: new SimpleState(name),
-    children: new SimpleState(children),
-    type: new SimpleState('folder'),
-    collapsed: new SimpleState(!!collapsed || !children?.length)
-  })
-
-const sidebarItemFile = (name: string, lang: string = 'text') =>
-  <SidebarItem>({ name: new SimpleState(name), type: new SimpleState('file') })
-
-const sidebarItems: SidebarItem[] = [
-  sidebarItemFolder('build', [
-    sidebarItemFile('kent.c.o'),
-    sidebarItemFile('kgfx.c.o'),
-    sidebarItemFile('image.iso'),
-  ]),
-  sidebarItemFolder('include', [
-    sidebarItemFolder('os', [
-      sidebarItemFile('k.h'),
-      sidebarItemFile('kgfx.h'),
-    ]),
-  ], true),
-  sidebarItemFolder('src', [
-    sidebarItemFile('kent.c'),
-    sidebarItemFile('kgfx.c'),
-  ]),
-  sidebarItemFile('compile_commands.json'),
-  sidebarItemFile('build.ninja'),
-];
-
 class Setting<V> {
   state: SimpleState<V>;
   compartment: Compartment;
@@ -176,20 +93,20 @@ const globalSettings = {
 
 const openFilePath = new SimpleState<string>('/src/kent.c');
 
-interface File {
+interface Buffer {
   state: SimpleState<EditorState>,
   settings: { 
     language: Setting<LanguageSupport>
   }
 }
 
-const createFile = (doc: string) => {
+const createBuffer = (doc: string) => {
   const settings = { language: new Setting(cppLang(), x => x) };
 
-  const file: File = {
+  const buffer: Buffer = {
     settings,
     state: new SimpleState(EditorState.create({
-      doc: doc.trimStart(),
+      doc: doc?.trimStart(),
       extensions: [
         basicSetup,
         keymap.of([indentWithTab]),
@@ -204,48 +121,39 @@ const createFile = (doc: string) => {
     ...Object.values(globalSettings)
   ].forEach(setting => {
     setting.effect(effects => {
-      file.state.update(file.state.current().update({ effects }).state);
+      buffer.state.update(buffer.state.current().update({ effects }).state);
     });
   });
 
-  return file;
+  return buffer;
 }
-const files: { [path: string]: File } = {};
-function createFiles() {
-  files['/src/kent.c'] = createFile(`
-#include <os/k.h>
-#include <os/kgfx.h>
 
-#define forever for (;;)
+const buffers: { [path: string]: Buffer } = {};
 
-void kern_entry() {
-  kgfx_init();
-  kgfx_tty_t tty = {0};
-  kgfx_print(&tty, "Hello, World!\\n");
+const sidebarItemFolder = (name: string, children?: SidebarItem[], collapsed?: boolean) =>
+  <SidebarItem>({
+    name: new SimpleState(name),
+    children: new SimpleState(children),
+    type: new SimpleState('folder'),
+    collapsed: new SimpleState(!!collapsed || !children?.length)
+  })
 
-  forever asm volatile ("hlt");
-}\n`);
+const sidebarItemFile = (name: string, lang: string = 'text') =>
+  <SidebarItem>({ name: new SimpleState(name), type: new SimpleState('file') });
 
-  files['/src/kgfx.c'] = createFile(`
-#include <os/k.h>
+function createBuffers(): SidebarItem[] {
+  const root = walk<SidebarItem>(filesystem.root, (node, path, children) => {
+    if (node.type === 'file') {
+      buffers[path] = createBuffer(node.content);
+      return sidebarItemFile(node.name);
+    }
+    return sidebarItemFolder(node.name, children, true);
+  });
 
-void kgfx_init() {}
-void kgfx_write(kgfx_tty_t *tty, char c) {
-  switch (c) {
-    case '\\n': tty->x = 0; ++tty->y; break;
-    default:
-      vga_set(tty->x++, tty->y, tty->col, c);
-      break;
-  }
-}
-void kgfx_print(kgfx_tty_t *tty, const char *msg) {
-  while (*msg) kgfx_write(tty, *(msg++));
-}\n`);
+  return root.children.current();
 }
 
 window.onload = () => {
-  createFiles();
-
   effectNow(globalSettings.theme.state, v => {
     Object.entries(themeCssMap).forEach(([name, cssName]) => {
       document.body.style.setProperty(
@@ -257,16 +165,16 @@ window.onload = () => {
   });
 
   const sidebar = Q("#sidebar");
-  sidebarItems
+  createBuffers()
     .map(x => createSidebarItem(x))
     .forEach(e => sidebar.appendChild(e));
   
   const view = new EditorView({
-    state: files[openFilePath.current()].state.current(),
+    state: buffers[openFilePath.current()].state.current(),
     parent: Q("#editor")
   });
 
-  Object.entries(files).forEach(([path, f]) => {
+  Object.entries(buffers).forEach(([path, f]) => {
     f.state.effect(v => {
       if (path === openFilePath.current())
         view.setState(v);
@@ -274,9 +182,9 @@ window.onload = () => {
   });
 
   openFilePath.effect((p, old) => {
-    files[old].state.update(view.state);
-    if (!files[p]) files[p] = createFile('');
-    view.setState(files[p].state.current());
+    buffers[old].state.update(view.state);
+    if (!buffers[p]) buffers[p] = createBuffer('');
+    view.setState(buffers[p].state.current());
   });
 
   setTimeout(() => {

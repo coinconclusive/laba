@@ -1,6 +1,9 @@
 import createTheme from "../theme";
 import { tags as t, Tag } from '@lezer/highlight';
 
+// Rosé Pine Dawn Theme.
+// https://rosepinetheme.com/
+
 export const rosePineTheme = createTheme({
   variant: 'light',
   settings: {
