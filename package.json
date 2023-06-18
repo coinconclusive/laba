@@ -7,7 +7,7 @@
   "main": "dist/bundle.js",
   "scripts": {
     "build": "webpack",
-    "dev": "webpack --mode=development"
+    "dev": "webpack serve --mode=development"
   },
   "devDependencies": {
     "ts-loader": "^9.4.3",
@@ -23,7 +23,6 @@
     "@codemirror/state": "^6.2.1",
     "@codemirror/view": "^6.13.2",
     "@lezer/common": "^1.0.3",
-    "codemirror": "^6.0.1",
-    "thememirror": "^2.0.1"
+    "codemirror": "^6.0.1"
   }
 }

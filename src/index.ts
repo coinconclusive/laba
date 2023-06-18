@@ -1,7 +1,7 @@
 import { indentWithTab } from "@codemirror/commands";
 import { cpp as cppLang } from "@codemirror/lang-cpp";
 import { LanguageSupport } from "@codemirror/language";
-import { Compartment, EditorState, Extension, StateEffect, Transaction } from "@codemirror/state";
+import { Compartment, EditorState, Extension, StateEffect } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
 import { basicSetup, EditorView } from "codemirror";
 import { Theme, themeCssMap } from "./theme";
